@@ -30,6 +30,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Install Frontend Dependencies
+        run: npm install
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
