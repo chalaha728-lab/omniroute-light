@@ -346,7 +346,7 @@ func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest
 		provider, exists := config.Providers[pName]
 		configMutex.RUnlock()
 
-		if exists && (len(provider.APIKeys) > 0 || provider.AuthType == "local") && resilience.GlobalBreaker.GetState(pName) != resilience.StateDead {
+		if exists && len(provider.APIKeys) > 0 && resilience.GlobalBreaker.GetState(pName) != resilience.StateDead {
 			apiKey := getNextAPIKey(pName, provider.APIKeys)
 			req.Model = mName
 			
