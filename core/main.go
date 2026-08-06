@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"omniroute-core/cache"
 	"omniroute-core/compression"
 	"omniroute-core/handoff"
 	"omniroute-core/providers"
@@ -31,6 +32,7 @@ type Config struct {
 	RoutingStrategy routing.Strategy          `json:"routing_strategy"`
 	CompressRTK  bool                         `json:"compress_rtk"`
 	CompressCaveman bool                      `json:"compress_caveman"`
+	EnableCache  bool                         `json:"enable_cache"`
 	Guardrails   GuardrailsSettings           `json:"guardrails"`
 }
 
@@ -58,6 +60,7 @@ var (
 		RoutingStrategy: routing.StrategyAutoCombo,
 		CompressRTK:  true,
 		CompressCaveman: false,
+		EnableCache:  true,
 		Guardrails: GuardrailsSettings{
 			RedactPII:         true,
 			BlockDangerous:    true,
@@ -220,6 +223,23 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 1.5 Caching Check
+	var reqHash string
+	if config.EnableCache {
+		reqHash = cache.GenerateHash(req.Messages)
+		if entry, exists := cache.Get(reqHash); exists {
+			for k, vv := range entry.Header {
+				for _, v := range vv {
+					w.Header().Add(k, v)
+				}
+			}
+			w.Header().Set("X-OmniRoute-Cache", "HIT")
+			w.WriteHeader(http.StatusOK)
+			w.Write(entry.Body)
+			return
+		}
+	}
+
 	// 2. Extract Session ID for Context Handoff
 	sessionID := handoff.ExtractSessionID(r.Header, bodyBytes)
 	
@@ -228,7 +248,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	if !exists || len(provider.APIKeys) == 0 || provider.APIKeys[0] == "" || resilience.GlobalBreaker.GetState(providerName) == resilience.StateDead {
 		// 3. Advanced Routing & Auto-Combo
-		handleFallbackCombo(w, r, req, sessionID)
+		handleFallbackCombo(w, r, req, sessionID, reqHash)
 		return
 	}
 
@@ -239,7 +259,7 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	apiKey := getNextAPIKey(providerName, provider.APIKeys)
 	req.Model = modelName
 
-	proxyToUpstream(w, r, providerName, provider, apiKey, req)
+	proxyToUpstream(w, r, providerName, provider, apiKey, req, reqHash)
 }
 
 func parseModelTarget(modelInput string) (string, string) {
@@ -274,7 +294,7 @@ func getNextAPIKey(providerName string, keys []string) string {
 	return key
 }
 
-func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string, provider ProviderSettings, apiKey string, req ChatRequest) {
+func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string, provider ProviderSettings, apiKey string, req ChatRequest, reqHash string) {
 	targetURL := provider.BaseURL + "/chat/completions"
 
 	updatedBody, _ := json.Marshal(req)
@@ -317,13 +337,24 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string
 			w.Header().Add(k, v)
 		}
 	}
+	w.Header().Set("X-OmniRoute-Cache", "MISS")
 	w.WriteHeader(resp.StatusCode)
 
+	var cacheBuf bytes.Buffer
+	var reader io.Reader = resp.Body
+	if reqHash != "" && resp.StatusCode == 200 {
+		reader = io.TeeReader(resp.Body, &cacheBuf)
+	}
+
 	buf := make([]byte, 32*1024)
-	io.CopyBuffer(w, resp.Body, buf)
+	io.CopyBuffer(w, reader, buf)
+
+	if reqHash != "" && resp.StatusCode == 200 {
+		cache.Set(reqHash, cacheBuf.Bytes(), resp.Header)
+	}
 }
 
-func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest, sessionID string) {
+func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest, sessionID string, reqHash string) {
 	configMutex.RLock()
 	combos := config.Combos["auto-fallback"]
 	strategy := config.RoutingStrategy
@@ -359,7 +390,7 @@ func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest
 			// the client receives a 502. Real OmniRoute reads the SSE stream and falls back dynamically.
 			// Here we are executing a pre-flight circuit-breaker check and selecting the best node.
 			
-			proxyToUpstream(w, r, pName, provider, apiKey, req)
+			proxyToUpstream(w, r, pName, provider, apiKey, req, reqHash)
 			return
 		}
 	}

@@ -13,6 +13,7 @@ export default function CombosPage() {
   const [circuitBreaker, setCircuitBreaker] = useState(true);
   const [rtkCompression, setRtkCompression] = useState(true);
   const [cavemanMode, setCavemanMode] = useState(false);
+  const [semanticCache, setSemanticCache] = useState(true);
 
   const addTarget = (target: string) => {
     if (target && !comboChain.includes(target)) {
@@ -195,10 +196,20 @@ export default function CombosPage() {
 
           <div className="bg-slate-900/80 p-5 rounded-2xl border border-slate-800 shadow-lg">
             <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center gap-2">
-              🗜️ Token Compression Pipeline
+              🗜️ Token Compression & Caching
             </h3>
             
             <div className="space-y-4">
+              <label className="flex items-start space-x-3 cursor-pointer group p-3 rounded-xl hover:bg-slate-800/50 transition-colors">
+                <input type="checkbox" checked={semanticCache} onChange={() => setSemanticCache(!semanticCache)} className="mt-1 w-4 h-4 rounded border-slate-700 text-emerald-500 focus:ring-emerald-500/30 bg-slate-900" />
+                <div>
+                  <div className="text-xs font-bold text-slate-200 group-hover:text-emerald-300 transition-colors">Exact-Match Memory Cache</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    Instantly serves identical prior requests in &lt;5ms. Reduces API latency and cost to zero on cache hits.
+                  </div>
+                </div>
+              </label>
+
               <label className="flex items-start space-x-3 cursor-pointer group p-3 rounded-xl hover:bg-slate-800/50 transition-colors">
                 <input type="checkbox" checked={rtkCompression} onChange={() => setRtkCompression(!rtkCompression)} className="mt-1 w-4 h-4 rounded border-slate-700 text-purple-500 focus:ring-purple-500/30 bg-slate-900" />
                 <div>
