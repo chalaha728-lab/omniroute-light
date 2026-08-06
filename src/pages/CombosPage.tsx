@@ -87,19 +87,19 @@ export default function CombosPage() {
                 return (
                 <div
                   key={idx}
-                  className={\`flex items-center justify-between p-4 rounded-xl border shadow-md transition-all \${
+                  className={`flex items-center justify-between p-4 rounded-xl border shadow-md transition-all ${
                     isDead ? 'bg-rose-950/10 border-rose-900/30 opacity-70' :
                     isDegraded ? 'bg-amber-950/10 border-amber-900/30' :
                     'bg-slate-950 border-slate-800 hover:border-slate-700'
-                  }\`}
+                  }`}
                 >
                   <div className="flex items-center space-x-4">
-                    <span className={\`w-8 h-8 rounded-lg flex items-center justify-center font-mono text-xs font-bold \${
+                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center font-mono text-xs font-bold ${
                       isDead ? 'bg-rose-950 text-rose-500 border border-rose-900/50' :
                       isDegraded ? 'bg-amber-950 text-amber-500 border border-amber-900/50' :
                       idx === 0 ? 'bg-cyan-950 text-cyan-400 border border-cyan-800' :
                       'bg-slate-900 text-slate-400 border border-slate-700'
-                    }\`}>
+                    }`}>
                       {idx + 1}
                     </span>
                     <div>
