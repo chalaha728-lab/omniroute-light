@@ -444,9 +444,6 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string
 	w.Header().Set("X-OmniRoute-Cache", "MISS")
 	w.WriteHeader(resp.StatusCode)
 
-	var cacheBuf bytes.Buffer
-	var usageBuf bytes.Buffer
-	
 	// Create a MultiWriter to tee to cache and usage (or just use one buffer for both)
 	var fullBuf bytes.Buffer
 	reader := io.TeeReader(resp.Body, &fullBuf)
