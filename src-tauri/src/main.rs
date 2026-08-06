@@ -1,24 +1,35 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use tauri::Manager;
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
-struct SidecarState(Mutex<Option<CommandChild>>);
+struct SidecarState(Arc<Mutex<Option<CommandChild>>>);
 
 fn main() {
+    let sidecar_state = Arc::new(Mutex::new(None));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(SidecarState(Mutex::new(None)))
+        .manage(SidecarState(sidecar_state))
         .setup(|app| {
-            let sidecar_command = app.shell().sidecar("omniroute-core").unwrap();
-            if let Ok((_rx, child)) = sidecar_command.spawn() {
-                let state = app.state::<SidecarState>();
-                *state.0.lock().unwrap() = Some(child);
-                println!("[OmniRoute Light] Go sidecar process started successfully.");
-            }
+            let app_handle = app.handle().clone();
+            // Spawn sidecar asynchronously in background thread so the window opens INSTANTLY (< 100ms)
+            thread::spawn(move || {
+                if let Ok(sidecar_command) = app_handle.shell().sidecar("omniroute-core") {
+                    if let Ok((_rx, child)) = sidecar_command.spawn() {
+                        if let Some(state) = app_handle.try_state::<SidecarState>() {
+                            if let Ok(mut lock) = state.0.lock() {
+                                *lock = Some(child);
+                                println!("[OmniRoute Light] Go sidecar process started in background.");
+                            }
+                        }
+                    }
+                }
+            });
             Ok(())
         })
         .build(tauri::generate_context!())
