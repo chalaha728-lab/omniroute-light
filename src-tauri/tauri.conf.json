@@ -35,6 +35,11 @@
     ],
     "externalBin": [
       "binaries/omniroute-core"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "hooks.nsh"
+      }
+    }
   }
 }
