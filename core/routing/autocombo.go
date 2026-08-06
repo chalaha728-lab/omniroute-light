@@ -107,14 +107,12 @@ func SelectNextTarget(combos []string, strategy Strategy, breaker *resilience.Ci
 		return minTarget
 
 	case StrategyAutoCombo:
-		bestTarget := alive[0]
 		bestScore := -1.0
 		
 		for _, target := range alive {
 			score := ScoreNode(target, breaker)
 			if score > bestScore {
 				bestScore = score
-				bestTarget = target
 			}
 		}
 		
@@ -142,10 +140,10 @@ func parseModelTarget(modelInput string) (string, string) {
 		return parts[0], parts[1]
 	}
 	// Fallback lookup
-	for pName, p := range providers.GlobalRegistry.GetAll() {
+	for _, p := range providers.GlobalRegistry.GetAll() {
 		for _, m := range p.Models {
 			if m == modelInput {
-				return pName, m
+				return p.ID, m
 			}
 		}
 	}
