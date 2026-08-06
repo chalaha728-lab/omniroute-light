@@ -14,30 +14,47 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"omniroute-core/providers"
 )
 
 type Config struct {
-	Port         int                 `json:"port"`
-	DefaultModel string              `json:"default_model"`
-	Providers    map[string]Provider `json:"providers"`
-	Combos       map[string][]string `json:"combos"`
-	CompressRTK  bool                `json:"compress_rtk"`
+	Port         int                          `json:"port"`
+	DefaultModel string                       `json:"default_model"`
+	Providers    map[string]ProviderSettings `json:"providers"`
+	Combos       map[string][]string          `json:"combos"`
+	CompressRTK  bool                         `json:"compress_rtk"`
+	Guardrails   GuardrailsSettings           `json:"guardrails"`
 }
 
-type Provider struct {
+type ProviderSettings struct {
 	Name    string   `json:"name"`
 	BaseURL string   `json:"base_url"`
 	APIKeys []string `json:"api_keys"`
 	Models  []string `json:"models"`
+	Enabled bool     `json:"enabled"`
+}
+
+type GuardrailsSettings struct {
+	RedactPII         bool    `json:"redact_pii"`
+	BlockDangerous    bool    `json:"block_dangerous"`
+	MaxTokensPerMonth int     `json:"max_tokens_per_month"`
+	BudgetLimitUSD    float64 `json:"budget_limit_usd"`
 }
 
 var (
 	config = Config{
 		Port:         20128,
 		DefaultModel: "gpt-4o",
-		Providers:    make(map[string]Provider),
+		Providers:    make(map[string]ProviderSettings),
 		Combos:       make(map[string][]string),
 		CompressRTK:  true,
+		Guardrails: GuardrailsSettings{
+			RedactPII:         true,
+			BlockDangerous:    true,
+			MaxTokensPerMonth: 10000000,
+			BudgetLimitUSD:    50.0,
+		},
 	}
 	configMutex sync.RWMutex
 	keyIndex    = make(map[string]int)
@@ -65,6 +82,7 @@ func main() {
 	mux.HandleFunc("/v1/models", handleModels)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	mux.HandleFunc("/api/config", handleConfig)
+	mux.HandleFunc("/api/providers/catalog", handleProvidersCatalog)
 
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", config.Port),
@@ -95,42 +113,40 @@ func loadInitialConfig() {
 	configMutex.Lock()
 	defer configMutex.Unlock()
 
-	config.Providers["openai"] = Provider{
-		Name:    "OpenAI",
-		BaseURL: "https://api.openai.com/v1",
-		APIKeys: []string{os.Getenv("OPENAI_API_KEY")},
-		Models:  []string{"gpt-4o", "gpt-4o-mini", "o1-mini", "o3-mini"},
-	}
-	config.Providers["anthropic"] = Provider{
-		Name:    "Anthropic",
-		BaseURL: "https://api.anthropic.com/v1",
-		APIKeys: []string{os.Getenv("ANTHROPIC_API_KEY")},
-		Models:  []string{"claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"},
-	}
-	config.Providers["gemini"] = Provider{
-		Name:    "Google Gemini",
-		BaseURL: "https://generativelanguage.googleapis.com/v1beta",
-		APIKeys: []string{os.Getenv("GEMINI_API_KEY")},
-		Models:  []string{"gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash-exp"},
-	}
-	config.Providers["deepseek"] = Provider{
-		Name:    "DeepSeek",
-		BaseURL: "https://api.deepseek.com/v1",
-		APIKeys: []string{os.Getenv("DEEPSEEK_API_KEY")},
-		Models:  []string{"deepseek-chat", "deepseek-reasoner"},
+	allMeta := providers.GlobalRegistry.GetAll()
+	for _, meta := range allMeta {
+		config.Providers[meta.ID] = ProviderSettings{
+			Name:    meta.Name,
+			BaseURL: meta.BaseURL,
+			APIKeys: []string{os.Getenv(strings.ToUpper(meta.ID) + "_API_KEY")},
+			Models:  meta.Models,
+			Enabled: true,
+		}
 	}
 
-	config.Combos["auto-fallback"] = []string{"openai:gpt-4o", "anthropic:claude-3-5-sonnet-latest", "deepseek:deepseek-chat"}
+	config.Combos["auto-fallback"] = []string{
+		"openai:gpt-4o",
+		"anthropic:claude-3-5-sonnet-latest",
+		"deepseek:deepseek-chat",
+		"groq:llama-3.3-70b-versatile",
+		"gemini:gemini-1.5-pro",
+	}
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
-		"version": "4.0.0-light",
-		"engine":  "Go/FastProxy",
+		"status":    "ok",
+		"version":   "4.0.0-light",
+		"engine":    "Go/FastProxy",
+		"providers": len(config.Providers),
 	})
+}
+
+func handleProvidersCatalog(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(providers.GlobalRegistry.GetAll())
 }
 
 func handleModels(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +263,7 @@ func getNextAPIKey(providerName string, keys []string) string {
 	return key
 }
 
-func proxyToUpstream(w http.ResponseWriter, r *http.Request, provider Provider, apiKey string, req ChatRequest) {
+func proxyToUpstream(w http.ResponseWriter, r *http.Request, provider ProviderSettings, apiKey string, req ChatRequest) {
 	targetURL := provider.BaseURL + "/chat/completions"
 
 	updatedBody, _ := json.Marshal(req)
