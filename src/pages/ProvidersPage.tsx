@@ -13,8 +13,191 @@ export interface ProviderCatalogItem {
   supports_stream: boolean;
 }
 
+const DEFAULT_CATALOG: ProviderCatalogItem[] = [
+  {
+    id: 'openai',
+    name: 'OpenAI',
+    category: 'Major AI Lab',
+    base_url: 'https://api.openai.com/v1',
+    doc_url: 'https://platform.openai.com/docs',
+    default_model: 'gpt-4o',
+    models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo', 'o1-preview', 'o1-mini', 'o3-mini'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'anthropic',
+    name: 'Anthropic',
+    category: 'Major AI Lab',
+    base_url: 'https://api.anthropic.com/v1',
+    doc_url: 'https://docs.anthropic.com',
+    default_model: 'claude-3-5-sonnet-latest',
+    models: ['claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'claude-3-opus-20240229', 'claude-3-haiku-20240307'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    category: 'Major AI Lab',
+    base_url: 'https://generativelanguage.googleapis.com/v1beta',
+    doc_url: 'https://ai.google.dev/docs',
+    default_model: 'gemini-1.5-pro',
+    models: ['gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash-exp'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'deepseek',
+    name: 'DeepSeek AI',
+    category: 'Reasoning & Frontier',
+    base_url: 'https://api.deepseek.com/v1',
+    doc_url: 'https://platform.deepseek.com',
+    default_model: 'deepseek-chat',
+    models: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder'],
+    supports_vision: false,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'groq',
+    name: 'Groq LPU',
+    category: 'Ultra-Fast Inference',
+    base_url: 'https://api.groq.com/openai/v1',
+    doc_url: 'https://console.groq.com/docs',
+    default_model: 'llama-3.3-70b-versatile',
+    models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it'],
+    supports_vision: false,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral AI',
+    category: 'European AI Leader',
+    base_url: 'https://api.mistral.ai/v1',
+    doc_url: 'https://docs.mistral.ai',
+    default_model: 'mistral-large-latest',
+    models: ['mistral-large-latest', 'mistral-medium-latest', 'mistral-small-latest', 'codestral-latest'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    category: 'Open-Source Cloud',
+    base_url: 'https://api.together.xyz/v1',
+    doc_url: 'https://docs.together.ai',
+    default_model: 'meta-llama/Llama-3.3-70B-Instruct-Turbo',
+    models: ['meta-llama/Llama-3.3-70B-Instruct-Turbo', 'Qwen/Qwen2.5-Coder-32B-Instruct', 'deepseek-ai/DeepSeek-R1'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'fireworks',
+    name: 'Fireworks AI',
+    category: 'Fast Inference',
+    base_url: 'https://api.fireworks.ai/inference/v1',
+    doc_url: 'https://docs.fireworks.ai',
+    default_model: 'accounts/fireworks/models/llama-v3p3-70b-instruct',
+    models: ['accounts/fireworks/models/llama-v3p3-70b-instruct', 'accounts/fireworks/models/deepseek-r1'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter Aggregator',
+    category: 'Unified Aggregator',
+    base_url: 'https://openrouter.ai/api/v1',
+    doc_url: 'https://openrouter.ai/docs',
+    default_model: 'anthropic/claude-3.5-sonnet',
+    models: ['anthropic/claude-3.5-sonnet', 'openai/gpt-4o', 'google/gemini-2.0-flash-exp:free', 'deepseek/deepseek-r1'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'ollama',
+    name: 'Ollama (Local LLM)',
+    category: 'Local Engine',
+    base_url: 'http://localhost:11434/v1',
+    doc_url: 'https://ollama.com',
+    default_model: 'llama3.2:latest',
+    models: ['llama3.2:latest', 'qwen2.5-coder:latest', 'deepseek-r1:8b', 'mistral:latest'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'bedrock',
+    name: 'Amazon Bedrock',
+    category: 'Cloud Enterprise',
+    base_url: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+    doc_url: 'https://aws.amazon.com/bedrock',
+    default_model: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    models: ['anthropic.claude-3-5-sonnet-20241022-v2:0', 'amazon.titan-text-express-v1'],
+    supports_vision: true,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'cohere',
+    name: 'Cohere Enterprise',
+    category: 'Enterprise & Search',
+    base_url: 'https://api.cohere.com/v1',
+    doc_url: 'https://docs.cohere.com',
+    default_model: 'command-r-plus',
+    models: ['command-r-plus', 'command-r', 'command-light'],
+    supports_vision: false,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'perplexity',
+    name: 'Perplexity Search AI',
+    category: 'Search & Web RAG',
+    base_url: 'https://api.perplexity.ai',
+    doc_url: 'https://docs.perplexity.ai',
+    default_model: 'sonar-pro',
+    models: ['sonar-pro', 'sonar', 'sonar-reasoning-pro'],
+    supports_vision: false,
+    supports_tools: false,
+    supports_stream: true,
+  },
+  {
+    id: 'cerebras',
+    name: 'Cerebras Wafer-Scale',
+    category: 'Ultra-Fast Hardware',
+    base_url: 'https://api.cerebras.ai/v1',
+    doc_url: 'https://inference-docs.cerebras.ai',
+    default_model: 'llama3.3-70b',
+    models: ['llama3.3-70b', 'llama3.1-8b'],
+    supports_vision: false,
+    supports_tools: true,
+    supports_stream: true,
+  },
+  {
+    id: 'sambanova',
+    name: 'SambaNova Systems',
+    category: 'Ultra-Fast Hardware',
+    base_url: 'https://api.sambanova.ai/v1',
+    doc_url: 'https://docs.sambanova.ai',
+    default_model: 'Meta-Llama-3.3-70B-Instruct',
+    models: ['Meta-Llama-3.3-70B-Instruct', 'DeepSeek-R1-Distill-Llama-70B'],
+    supports_vision: false,
+    supports_tools: true,
+    supports_stream: true,
+  },
+];
+
 export default function ProvidersPage() {
-  const [catalog, setCatalog] = useState<ProviderCatalogItem[]>([]);
+  const [catalog, setCatalog] = useState<ProviderCatalogItem[]>(DEFAULT_CATALOG);
   const [search, setSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
@@ -22,8 +205,12 @@ export default function ProvidersPage() {
   useEffect(() => {
     fetch('http://localhost:20128/api/providers/catalog')
       .then((res) => res.json())
-      .then((data) => setCatalog(data))
-      .catch((err) => console.error('Failed to load catalog:', err));
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setCatalog(data);
+        }
+      })
+      .catch((err) => console.error('Using default catalog:', err));
   }, []);
 
   const categories = ['All', ...Array.from(new Set(catalog.map((item) => item.category)))];
@@ -48,7 +235,7 @@ export default function ProvidersPage() {
           <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
             📡 Provider & Endpoint Hub
             <span className="text-xs bg-cyan-950 border border-cyan-800/60 text-cyan-300 px-2.5 py-0.5 rounded-full font-mono">
-              {catalog.length} Providers Available
+              {filteredCatalog.length} Providers Available
             </span>
           </h2>
           <p className="text-xs text-slate-400 mt-1">
