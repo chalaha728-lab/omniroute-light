@@ -15,15 +15,22 @@ import (
 	"syscall"
 	"time"
 
+	"omniroute-core/compression"
+	"omniroute-core/handoff"
 	"omniroute-core/providers"
+	"omniroute-core/resilience"
+	"omniroute-core/routing"
 )
 
+// Global Configuration & State Management
 type Config struct {
 	Port         int                          `json:"port"`
 	DefaultModel string                       `json:"default_model"`
 	Providers    map[string]ProviderSettings `json:"providers"`
 	Combos       map[string][]string          `json:"combos"`
+	RoutingStrategy routing.Strategy          `json:"routing_strategy"`
 	CompressRTK  bool                         `json:"compress_rtk"`
+	CompressCaveman bool                      `json:"compress_caveman"`
 	Guardrails   GuardrailsSettings           `json:"guardrails"`
 }
 
@@ -48,7 +55,9 @@ var (
 		DefaultModel: "gpt-4o",
 		Providers:    make(map[string]ProviderSettings),
 		Combos:       make(map[string][]string),
+		RoutingStrategy: routing.StrategyAutoCombo,
 		CompressRTK:  true,
+		CompressCaveman: false,
 		Guardrails: GuardrailsSettings{
 			RedactPII:         true,
 			BlockDangerous:    true,
@@ -61,6 +70,7 @@ var (
 	keyMutex    sync.Mutex
 )
 
+// OpenAI Chat Completion Data Models
 type ChatMessage struct {
 	Role    string      `json:"role"`
 	Content interface{} `json:"content"`
@@ -68,7 +78,7 @@ type ChatMessage struct {
 
 type ChatRequest struct {
 	Model       string        `json:"model"`
-	Messages    []ChatMessage `json:"messages"`
+	Messages    []interface{} `json:"messages"` // Using interface to support objects (like handoff system messages)
 	Temperature *float64      `json:"temperature,omitempty"`
 	Stream      bool          `json:"stream,omitempty"`
 	MaxTokens   *int          `json:"max_tokens,omitempty"`
@@ -78,6 +88,8 @@ func main() {
 	loadInitialConfig()
 
 	mux := http.NewServeMux()
+
+	// CORS & System endpoints
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/v1/models", handleModels)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
@@ -137,9 +149,9 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":    "ok",
-		"version":   "4.0.0-light",
-		"engine":    "Go/FastProxy",
+		"status":   "ok",
+		"version":  "4.0.0-light-advanced",
+		"engine":   "Go/FastProxy",
 		"providers": len(config.Providers),
 	})
 }
@@ -196,39 +208,38 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if config.CompressRTK {
-		req.Messages = compressPromptMessages(req.Messages)
+	// 1. Prompt Compression Pipeline
+	if config.CompressRTK || config.CompressCaveman {
+		for i, msg := range req.Messages {
+			if msgMap, ok := msg.(map[string]interface{}); ok {
+				if content, ok := msgMap["content"].(string); ok {
+					msgMap["content"] = compression.ProcessPipeline(content, config.CompressRTK, config.CompressCaveman)
+					req.Messages[i] = msgMap
+				}
+			}
+		}
 	}
 
+	// 2. Extract Session ID for Context Handoff
+	sessionID := handoff.ExtractSessionID(r.Header, bodyBytes)
+	
 	providerName, modelName := parseModelTarget(req.Model)
 	provider, exists := config.Providers[providerName]
 
-	if !exists || len(provider.APIKeys) == 0 || provider.APIKeys[0] == "" {
-		handleFallbackCombo(w, r, req, bodyBytes)
+	if !exists || len(provider.APIKeys) == 0 || provider.APIKeys[0] == "" || resilience.GlobalBreaker.GetState(providerName) == resilience.StateDead {
+		// 3. Advanced Routing & Auto-Combo
+		handleFallbackCombo(w, r, req, sessionID)
 		return
 	}
+
+	// 4. Context Handoff Injection
+	req.Messages = handoff.DetectAndInjectHandoff(sessionID, providerName+":"+modelName, req.Messages)
+	handoff.RecordModelUsage(sessionID, providerName+":"+modelName)
 
 	apiKey := getNextAPIKey(providerName, provider.APIKeys)
 	req.Model = modelName
 
-	proxyToUpstream(w, r, provider, apiKey, req)
-}
-
-func compressPromptMessages(messages []ChatMessage) []ChatMessage {
-	for i := range messages {
-		if strContent, ok := messages[i].Content.(string); ok {
-			lines := strings.Split(strContent, "\n")
-			var cleaned []string
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if trimmed != "" && !strings.HasPrefix(trimmed, "// ") {
-					cleaned = append(cleaned, trimmed)
-				}
-			}
-			messages[i].Content = strings.Join(cleaned, "\n")
-		}
-	}
-	return messages
+	proxyToUpstream(w, r, providerName, provider, apiKey, req)
 }
 
 func parseModelTarget(modelInput string) (string, string) {
@@ -263,7 +274,7 @@ func getNextAPIKey(providerName string, keys []string) string {
 	return key
 }
 
-func proxyToUpstream(w http.ResponseWriter, r *http.Request, provider ProviderSettings, apiKey string, req ChatRequest) {
+func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string, provider ProviderSettings, apiKey string, req ChatRequest) {
 	targetURL := provider.BaseURL + "/chat/completions"
 
 	updatedBody, _ := json.Marshal(req)
@@ -274,14 +285,31 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, provider ProviderSe
 	}
 
 	outReq.Header.Set("Content-Type", "application/json")
-	outReq.Header.Set("Authorization", "Bearer "+apiKey)
+	if apiKey != "" {
+		outReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
+	// Track Active Connections for Least-Used routing
+	routing.ActiveConnections[providerName]++
+	defer func() {
+		routing.ActiveConnections[providerName]--
+	}()
+
+	start := time.Now()
 	client := &http.Client{Timeout: 120 * time.Second}
 	resp, err := client.Do(outReq)
-	if err != nil || resp.StatusCode >= 500 {
+	latency := time.Since(start)
+
+	if err != nil || resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+		// Record Failure in Circuit Breaker
+		resilience.GlobalBreaker.RecordFailure(providerName)
 		http.Error(w, fmt.Sprintf("Upstream error: %v", err), http.StatusBadGateway)
 		return
 	}
+	
+	// Record Success and Latency in Circuit Breaker
+	resilience.GlobalBreaker.RecordSuccess(providerName, latency)
+	
 	defer resp.Body.Close()
 
 	for k, vv := range resp.Header {
@@ -295,26 +323,48 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, provider ProviderSe
 	io.CopyBuffer(w, resp.Body, buf)
 }
 
-func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest, rawBody []byte) {
+func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest, sessionID string) {
 	configMutex.RLock()
 	combos := config.Combos["auto-fallback"]
+	strategy := config.RoutingStrategy
 	configMutex.RUnlock()
+	
+	// Retry loop for fallbacks
+	maxAttempts := len(combos)
+	if maxAttempts > 5 {
+		maxAttempts = 5
+	}
+	
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		target := routing.SelectNextTarget(combos, strategy, resilience.GlobalBreaker)
+		if target == "" {
+			break // No valid targets available
+		}
 
-	for _, target := range combos {
 		pName, mName := parseModelTarget(target)
 		configMutex.RLock()
 		provider, exists := config.Providers[pName]
 		configMutex.RUnlock()
 
-		if exists && len(provider.APIKeys) > 0 && provider.APIKeys[0] != "" {
+		if exists && (len(provider.APIKeys) > 0 || provider.AuthType == "local") && resilience.GlobalBreaker.GetState(pName) != resilience.StateDead {
 			apiKey := getNextAPIKey(pName, provider.APIKeys)
 			req.Model = mName
-			proxyToUpstream(w, r, provider, apiKey, req)
+			
+			// Inject Handoff context
+			req.Messages = handoff.DetectAndInjectHandoff(sessionID, pName+":"+mName, req.Messages)
+			handoff.RecordModelUsage(sessionID, pName+":"+mName)
+			
+			// We cannot directly use proxyToUpstream here without handling the response ourselves,
+			// but for simplicity in this proxy model, we will dispatch the request and if it fails,
+			// the client receives a 502. Real OmniRoute reads the SSE stream and falls back dynamically.
+			// Here we are executing a pre-flight circuit-breaker check and selecting the best node.
+			
+			proxyToUpstream(w, r, pName, provider, apiKey, req)
 			return
 		}
 	}
 
-	http.Error(w, "No active API keys found for configured providers or fallback combos", http.StatusUnauthorized)
+	http.Error(w, "No active healthy API keys found for configured providers or fallback combos", http.StatusServiceUnavailable)
 }
 
 func handleConfig(w http.ResponseWriter, r *http.Request) {
