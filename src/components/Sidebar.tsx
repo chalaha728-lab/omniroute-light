@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type TabType = 'providers' | 'combos' | 'mcp' | 'skills' | 'guardrails' | 'analytics' | 'settings';
+export type TabType = 'endpoint' | 'providers' | 'combos' | 'mcp' | 'skills' | 'guardrails' | 'analytics' | 'settings';
 
 interface SidebarProps {
   activeTab: TabType;
@@ -10,6 +10,7 @@ interface SidebarProps {
 
 export default function Sidebar({ activeTab, setActiveTab, status }: SidebarProps) {
   const menuItems: { id: TabType; label: string; icon: string; badge?: string }[] = [
+    { id: 'endpoint', label: 'Endpoint', icon: '⚡' },
     { id: 'providers', label: 'Endpoints & Providers', icon: '📡', badge: '18+' },
     { id: 'combos', label: 'Auto-Combo Router', icon: '🔀' },
     { id: 'mcp', label: 'MCP Tools & A2A', icon: '🛠️', badge: 'MCP' },
@@ -22,6 +23,7 @@ export default function Sidebar({ activeTab, setActiveTab, status }: SidebarProp
   return (
     <aside className="w-64 bg-slate-900/90 border-r border-slate-800 flex flex-col justify-between p-4 selection:bg-cyan-500">
       <div>
+        {/* Logo Branding */}
         <div className="flex items-center space-x-3 mb-8 px-2">
           <div className="w-9 h-9 rounded-xl gradient-glow flex items-center justify-center font-bold text-white shadow-lg shadow-cyan-500/20">
             OR
@@ -34,6 +36,7 @@ export default function Sidebar({ activeTab, setActiveTab, status }: SidebarProp
           </div>
         </div>
 
+        {/* Engine Status */}
         <div className="mb-6 px-2 py-2 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <span className={`w-2 h-2 rounded-full ${status.includes('Online') ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
@@ -42,6 +45,7 @@ export default function Sidebar({ activeTab, setActiveTab, status }: SidebarProp
           <span className="text-[10px] text-slate-500 font-mono">Port 20128</span>
         </div>
 
+        {/* Navigation Items */}
         <nav className="space-y-1">
           {menuItems.map((item) => {
             const isActive = activeTab === item.id;
@@ -70,6 +74,7 @@ export default function Sidebar({ activeTab, setActiveTab, status }: SidebarProp
         </nav>
       </div>
 
+      {/* Footer Info */}
       <div className="pt-4 border-t border-slate-800/80 px-2 text-[11px] text-slate-500 font-mono">
         <div className="flex justify-between items-center mb-1">
           <span>Engine RAM</span>

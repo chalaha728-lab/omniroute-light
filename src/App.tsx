@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar, { TabType } from './components/Sidebar';
+import EndpointPage from './pages/EndpointPage';
 import ProvidersPage from './pages/ProvidersPage';
 import CombosPage from './pages/CombosPage';
 import MCPPage from './pages/MCPPage';
@@ -9,7 +10,7 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import SettingsPage from './pages/SettingsPage';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<TabType>('providers');
+  const [activeTab, setActiveTab] = useState<TabType>('endpoint');
   const [status, setStatus] = useState<string>('Connecting...');
 
   useEffect(() => {
@@ -21,9 +22,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex font-sans selection:bg-cyan-500 selection:text-white">
+      {/* Navigation Sidebar */}
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} status={status} />
 
+      {/* Main Content Area */}
       <main className="flex-1 p-8 overflow-y-auto max-h-screen">
+        {activeTab === 'endpoint' && <EndpointPage />}
         {activeTab === 'providers' && <ProvidersPage />}
         {activeTab === 'combos' && <CombosPage />}
         {activeTab === 'mcp' && <MCPPage />}
