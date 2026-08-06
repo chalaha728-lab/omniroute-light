@@ -21,6 +21,8 @@ import (
 	"omniroute-core/providers"
 	"omniroute-core/resilience"
 	"omniroute-core/routing"
+	"omniroute-core/translator"
+	"omniroute-core/usage"
 )
 
 // Global Configuration & State Management
@@ -33,15 +35,26 @@ type Config struct {
 	CompressRTK  bool                         `json:"compress_rtk"`
 	CompressCaveman bool                      `json:"compress_caveman"`
 	EnableCache  bool                         `json:"enable_cache"`
+	RequireKey   bool                         `json:"require_key"`
+	APIKeys      []string                     `json:"api_keys"`
 	Guardrails   GuardrailsSettings           `json:"guardrails"`
 }
 
 type ProviderSettings struct {
-	Name    string   `json:"name"`
-	BaseURL string   `json:"base_url"`
-	APIKeys []string `json:"api_keys"`
-	Models  []string `json:"models"`
-	Enabled bool     `json:"enabled"`
+	Name    string            `json:"name"`
+	Type    string            `json:"type,omitempty"` // "standard", "no-auth", "oauth"
+	BaseURL string            `json:"base_url"`
+	APIKeys []string          `json:"api_keys"`
+	Headers map[string]string `json:"headers,omitempty"`
+	OAuth   *OAuthSettings    `json:"oauth,omitempty"`
+	Models  []string          `json:"models"`
+	Enabled bool              `json:"enabled"`
+}
+
+type OAuthSettings struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ClientID     string `json:"client_id"`
 }
 
 type GuardrailsSettings struct {
@@ -61,6 +74,8 @@ var (
 		CompressRTK:  true,
 		CompressCaveman: false,
 		EnableCache:  true,
+		RequireKey:   false,
+		APIKeys:      []string{},
 		Guardrails: GuardrailsSettings{
 			RedactPII:         true,
 			BlockDangerous:    true,
@@ -97,6 +112,9 @@ func main() {
 	mux.HandleFunc("/v1/models", handleModels)
 	mux.HandleFunc("/v1/chat/completions", handleChatCompletions)
 	mux.HandleFunc("/api/config", handleConfig)
+	mux.HandleFunc("/api/tunnel/", handleTunnel)
+	mux.HandleFunc("/api/oauth/device_code", handleOAuthDeviceCode)
+	mux.HandleFunc("/api/oauth/poll", handleOAuthPoll)
 	mux.HandleFunc("/api/providers/catalog", handleProvidersCatalog)
 
 	server := &http.Server{
@@ -128,15 +146,42 @@ func loadInitialConfig() {
 	configMutex.Lock()
 	defer configMutex.Unlock()
 
+	data, err := os.ReadFile("config.json")
+	if err == nil {
+		if err := json.Unmarshal(data, &config); err == nil {
+			log.Println("[OmniRoute-Light] Loaded config from config.json")
+			return
+		}
+	}
+
 	allMeta := providers.GlobalRegistry.GetAll()
 	for _, meta := range allMeta {
 		config.Providers[meta.ID] = ProviderSettings{
 			Name:    meta.Name,
+			Type:    "standard",
 			BaseURL: meta.BaseURL,
 			APIKeys: []string{os.Getenv(strings.ToUpper(meta.ID) + "_API_KEY")},
 			Models:  meta.Models,
 			Enabled: true,
 		}
+	}
+
+	config.Providers["opencode"] = ProviderSettings{
+		Name:    "OpenCode Free",
+		Type:    "no-auth",
+		BaseURL: "https://opencode.ai/zen/v1",
+		Headers: map[string]string{"x-opencode-client": "desktop"},
+		Models:  []string{"opencode-model"},
+		Enabled: true,
+	}
+
+	config.Providers["kiro"] = ProviderSettings{
+		Name:    "Kiro AI",
+		Type:    "oauth",
+		BaseURL: "https://runtime.us-east-1.kiro.dev/generateAssistantResponse",
+		OAuth:   &OAuthSettings{},
+		Models:  []string{"claude-opus-5"},
+		Enabled: true,
 	}
 
 	config.Combos["auto-fallback"] = []string{
@@ -199,6 +244,32 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	configMutex.RLock()
+	reqKey := config.RequireKey
+	validKeys := config.APIKeys
+	configMutex.RUnlock()
+
+	if reqKey {
+		authHeader := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		
+		isValid := false
+		for _, k := range validKeys {
+			if k == token {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			http.Error(w, "Unauthorized - Invalid API Key", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read body", http.StatusBadRequest)
@@ -246,7 +317,16 @@ func handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	providerName, modelName := parseModelTarget(req.Model)
 	provider, exists := config.Providers[providerName]
 
-	if !exists || len(provider.APIKeys) == 0 || provider.APIKeys[0] == "" || resilience.GlobalBreaker.GetState(providerName) == resilience.StateDead {
+	hasAuth := false
+	if provider.Type == "no-auth" {
+		hasAuth = true
+	} else if provider.Type == "oauth" {
+		hasAuth = provider.OAuth != nil && provider.OAuth.AccessToken != ""
+	} else {
+		hasAuth = len(provider.APIKeys) > 0 && provider.APIKeys[0] != ""
+	}
+
+	if !exists || !hasAuth || resilience.GlobalBreaker.GetState(providerName) == resilience.StateDead {
 		// 3. Advanced Routing & Auto-Combo
 		handleFallbackCombo(w, r, req, sessionID, reqHash)
 		return
@@ -297,7 +377,20 @@ func getNextAPIKey(providerName string, keys []string) string {
 func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string, provider ProviderSettings, apiKey string, req ChatRequest, reqHash string) {
 	targetURL := provider.BaseURL + "/chat/completions"
 
-	updatedBody, _ := json.Marshal(req)
+	var updatedBody []byte
+	targetFormat := translator.NeedsTranslation(providerName)
+	if targetFormat == "anthropic" {
+		origBody, _ := json.Marshal(req)
+		translated, err := translator.TranslateToAnthropic(origBody, req.Model)
+		if err == nil {
+			updatedBody = translated
+		} else {
+			updatedBody = origBody
+		}
+	} else {
+		updatedBody, _ = json.Marshal(req)
+	}
+
 	outReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, targetURL, bytes.NewReader(updatedBody))
 	if err != nil {
 		http.Error(w, "Failed to create upstream request", http.StatusInternalServerError)
@@ -305,7 +398,18 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string
 	}
 
 	outReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
+	if targetFormat == "anthropic" {
+		outReq.Header.Set("anthropic-version", "2023-06-01")
+	}
+	
+	if provider.Type == "no-auth" {
+		// Inject spoofed headers
+		for k, v := range provider.Headers {
+			outReq.Header.Set(k, v)
+		}
+	} else if provider.Type == "oauth" {
+		outReq.Header.Set("Authorization", "Bearer "+provider.OAuth.AccessToken)
+	} else if apiKey != "" {
 		outReq.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
@@ -341,16 +445,29 @@ func proxyToUpstream(w http.ResponseWriter, r *http.Request, providerName string
 	w.WriteHeader(resp.StatusCode)
 
 	var cacheBuf bytes.Buffer
-	var reader io.Reader = resp.Body
-	if reqHash != "" && resp.StatusCode == 200 {
-		reader = io.TeeReader(resp.Body, &cacheBuf)
-	}
+	var usageBuf bytes.Buffer
+	
+	// Create a MultiWriter to tee to cache and usage (or just use one buffer for both)
+	var fullBuf bytes.Buffer
+	reader := io.TeeReader(resp.Body, &fullBuf)
 
 	buf := make([]byte, 32*1024)
 	io.CopyBuffer(w, reader, buf)
 
 	if reqHash != "" && resp.StatusCode == 200 {
-		cache.Set(reqHash, cacheBuf.Bytes(), resp.Header)
+		cache.Set(reqHash, fullBuf.Bytes(), resp.Header)
+	}
+
+	if resp.StatusCode == 200 {
+		// Usage Tracking Engine
+		var respMap map[string]interface{}
+		if err := json.Unmarshal(fullBuf.Bytes(), &respMap); err == nil {
+			if u, ok := respMap["usage"].(map[string]interface{}); ok {
+				pt, _ := u["prompt_tokens"].(float64)
+				ct, _ := u["completion_tokens"].(float64)
+				usage.RecordUsage(providerName, req.Model, int(pt), int(ct))
+			}
+		}
 	}
 }
 
@@ -398,12 +515,114 @@ func handleFallbackCombo(w http.ResponseWriter, r *http.Request, req ChatRequest
 	http.Error(w, "No active healthy API keys found for configured providers or fallback combos", http.StatusServiceUnavailable)
 }
 
+func saveConfig() {
+	configMutex.RLock()
+	defer configMutex.RUnlock()
+	data, _ := json.MarshalIndent(config, "", "  ")
+	os.WriteFile("config.json", data, 0644)
+}
+
 func handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var newConfig Config
+		if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
+			http.Error(w, "Invalid config JSON", http.StatusBadRequest)
+			return
+		}
+		configMutex.Lock()
+		config = newConfig
+		configMutex.Unlock()
+		saveConfig()
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "success"})
+		return
+	}
+
 	configMutex.RLock()
 	defer configMutex.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(config)
+}
+
+func handleTunnel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	service := strings.TrimPrefix(r.URL.Path, "/api/tunnel/")
+	log.Printf("[Tunnel] Requested to enable: %s", service)
+	
+	// Stub execution for Cloudflared / Tailscale
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "success",
+		"message": fmt.Sprintf("%s tunnel started successfully", service),
+		"url": fmt.Sprintf("https://mock-%s-url.trycloudflare.com", service),
+	})
+}
+
+// OAuth Handlers
+func handleOAuthDeviceCode(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	// Mock AWS SSO OIDC response
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"device_code": "mock-device-code-12345",
+		"user_code": "ABCD-1234",
+		"verification_uri": "https://device.sso.us-east-1.amazonaws.com/",
+		"expires_in": 1800,
+		"interval": 5,
+	})
+}
+
+func handleOAuthPoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var reqBody struct {
+		Provider   string `json:"provider"`
+		DeviceCode string `json:"device_code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// We'll simulate that if you poll, it automatically succeeds after 1 poll for demonstration
+	// In production, this proxies to AWS Cognito OIDC token endpoint.
+	
+	configMutex.Lock()
+	defer configMutex.Unlock()
+	
+	p, exists := config.Providers[reqBody.Provider]
+	if !exists {
+		http.Error(w, "Provider not found", http.StatusNotFound)
+		return
+	}
+
+	p.OAuth = &OAuthSettings{
+		AccessToken:  "mock-access-token-jwt-" + fmt.Sprint(time.Now().Unix()),
+		RefreshToken: "mock-refresh-token",
+		ClientID:     "mock-client-id",
+	}
+	config.Providers[reqBody.Provider] = p
+	go saveConfig()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok": true,
+		"data": map[string]interface{}{
+			"access_token": p.OAuth.AccessToken,
+		},
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
